@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber Hand - Fix Access</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; color: #00f2ff; font-family: monospace; }
+        canvas { display: block; }
+        #ui-layer {
+            position: absolute; top: 20px; left: 20px;
+            display: flex; flex-direction: column; gap: 10px; z-index: 100;
+        }
+        #info {
+            background: rgba(0,0,0,0.8); padding: 10px; border: 1px solid #00f2ff;
+            text-transform: uppercase; font-weight: bold; font-size: 13px;
+        }
+        #cam-select {
+            padding: 8px; background: #111; color: #00f2ff; border: 1px solid #00f2ff;
+            font-family: monospace; outline: none; cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui-layer">
+        <div id="info">System: Initializing...</div>
+        <select id="cam-select"><option>Scanning for Cameras...</option></select>
+    </div>
+
+    <video id="input_video" style="display:none;" playsinline></video>
+    <canvas id="output_canvas"></canvas>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const info = document.getElementById('info');
+        const camSelect = document.getElementById('cam-select');
+        
+        const chars = "0123456789ABCDEF#!@$%^&*";
+        let currentStream = null;
+        let mediapipeCamera = null;
+
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Hàm chính để khởi động camera
+        async function startCamera(deviceId = null) {
+            try {
+                // Tắt các luồng camera cũ nếu có
+                if (currentStream) {
+                    currentStream.getTracks().forEach(track => track.stop());
+                }
+
+                const constraints = {
+                    video: deviceId ? { deviceId: { exact: deviceId } } : true
+                };
+
+                currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = currentStream;
+
+                // Sau khi lấy được stream, dùng MediaPipe Camera Utils để đẩy khung hình vào Hand Tracking
+                if (mediapipeCamera) {
+                    // Nếu đã có instance cũ thì chỉ cần cập nhật
+                    await mediapipeCamera.stop();
+                }
+
+                mediapipeCamera = new Camera(videoElement, {
+                    onFrame: async () => {
+                        await hands.send({image: videoElement});
+                    },
+                    width: 1280,
+                    height: 720
+                });
+                
+                await mediapipeCamera.start();
+                info.innerText = "Neural Stream: Online";
+            } catch (err) {
+                console.error(err);
+                info.innerText = "Access Denied: Check if camera is used by other apps";
+            }
+        }
+
+        // Lấy danh sách camera
+        async function getDevices() {
+            try {
+                // Buộc trình duyệt hiện bảng hỏi quyền lần đầu
+                await navigator.mediaDevices.getUserMedia({ video: true });
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                
+                camSelect.innerHTML = '';
+                videoDevices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${camSelect.length + 1}`;
+                    camSelect.appendChild(option);
+                });
+
+                // Chạy camera mặc định
+                if (videoDevices.length > 0) {
+                    startCamera(videoDevices[0].deviceId);
+                }
+            } catch (e) {
+                info.innerText = "Error: Please allow camera access";
+            }
+        }
+
+        camSelect.onchange = () => startCamera(camSelect.value);
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.translate(canvasElement.width, 0);
+            canvasCtx.scale(-1, 1);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            let fingertips = [];
+            if (results.multiHandLandmarks) {
+                results.multiHandLandmarks.forEach((landmarks) => {
+                    [4, 8, 12, 16, 20].forEach((tipIdx, i) => {
+                        const baseIdx = tipIdx - 2;
+                        let isOpen = (i === 0) ? 
+                            Math.abs(landmarks[tipIdx].x - landmarks[2].x) > 0.06 :
+                            landmarks[tipIdx].y < landmarks[baseIdx].y;
+
+                        if (isOpen) {
+                            fingertips.push({
+                                x: landmarks[tipIdx].x * canvasElement.width,
+                                y: landmarks[tipIdx].y * canvasElement.height
+                            });
+                        }
+                    });
+                });
+            }
+
+            if (fingertips.length > 1) {
+                for (let i = 0; i < fingertips.length; i++) {
+                    for (let j = i + 1; j < fingertips.length; j++) {
+                        const p1 = fingertips[i];
+                        const p2 = fingertips[j];
+
+                        // Sợi chỉ phát sáng siêu đậm
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(p1.x, p1.y);
+                        canvasCtx.lineTo(p2.x, p2.y);
+                        canvasCtx.shadowBlur = 15;
+                        canvasCtx.shadowColor = "#fff";
+                        canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+                        canvasCtx.lineWidth = 3;
+                        canvasCtx.stroke();
+                        canvasCtx.shadowBlur = 0;
+
+                        // Ký tự Bold chạy trên dây
+                        for (let k = 0; k < 5; k++) {
+                            if (Math.random() > 0.7) {
+                                const r = Math.random();
+                                const cx = p1.x + (p2.x - p1.x) * r;
+                                const cy = p1.y + (p2.y - p1.y) * r;
+                                canvasCtx.save();
+                                canvasCtx.translate(cx, cy);
+                                canvasCtx.scale(-1, 1);
+                                canvasCtx.fillStyle = "#fff";
+                                canvasCtx.font = "bold 28px 'Courier New'";
+                                canvasCtx.shadowBlur = 10;
+                                canvasCtx.shadowColor = "#00f2ff";
+                                canvasCtx.fillText(chars[Math.floor(Math.random() * chars.length)], 0, 0);
+                                canvasCtx.restore();
+                            }
+                        }
+                    }
+                }
+            }
+
+            fingertips.forEach(p => {
+                canvasCtx.beginPath();
+                canvasCtx.arc(p.x, p.y, 10, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = '#fff';
+                canvasCtx.shadowBlur = 20;
+                canvasCtx.shadowColor = "#00f2ff";
+                canvasCtx.fill();
+            });
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        hands.onResults(onResults);
+
+        getDevices();
+    </script>
+</body>
+</html>
